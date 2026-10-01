@@ -23,7 +23,7 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      GEMINI_MODEL: gemini-3.8-flash
+      GEMINI_MODEL: gemini-3.1-flash-lite
       PYTHONUNBUFFERED: "1"
 
     steps:
