@@ -1,0 +1,5 @@
+google-genai>=1.73,<2
+httpx>=0.28,<1
+feedparser>=6.0.11,<7
+pydantic>=2.10,<3
+python-dotenv>=1.0,<2
