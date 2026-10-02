@@ -14,6 +14,14 @@ TARGET_CATEGORIES: tuple[str, ...] = (
     "cs.DC",
 )
 
+CLUSTER_WEIGHTS: dict[str, float] = {
+    "sciml_pinns": 5.0,
+    "neural_operators_rom_surrogates": 4.0,
+    "cfd_rheology_fem_generative_flow": 2.0,
+    "industry40_uns_predictive_maintenance": 1.0,
+    "uq_probabilistic_methods": 1.0,
+}
+
 SEARCH_CLUSTERS: dict[str, tuple[str, ...]] = {
     "sciml_pinns": (
         "Scientific Machine Learning",

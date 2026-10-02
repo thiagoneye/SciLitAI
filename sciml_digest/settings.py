@@ -17,14 +17,20 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     gemini_model: str = "gemini-3.1-flash-lite"
+
     arxiv_top_k: int = 5
     arxiv_max_results_per_query: int = 100
     arxiv_terms_per_query: int = 12
     arxiv_timeout_seconds: float = 30.0
     arxiv_max_attempts: int = 4
     arxiv_min_request_interval_seconds: float = 3.0
+
     gemini_max_attempts: int = 4
+
     telegram_max_attempts: int = 4
+    telegram_timeout_seconds: float = 20.0
+    telegram_force_ipv4: bool = True
+
     log_level: str = "INFO"
 
     @classmethod
@@ -63,7 +69,16 @@ class Settings:
             ),
             gemini_max_attempts=_read_positive_int("GEMINI_MAX_ATTEMPTS", 4),
             telegram_max_attempts=_read_positive_int(
-                "TELEGRAM_MAX_ATTEMPTS", 4
+                "TELEGRAM_MAX_ATTEMPTS",
+                4,
+            ),
+            telegram_timeout_seconds=_read_positive_float(
+                "TELEGRAM_TIMEOUT_SECONDS",
+                20.0,
+            ),
+            telegram_force_ipv4=_read_bool(
+                "TELEGRAM_FORCE_IPV4",
+                True,
             ),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
         )
@@ -113,3 +128,23 @@ def _read_positive_float(name: str, default: float) -> float:
     if value <= 0:
         raise ConfigurationError(f"{name} must be > 0.")
     return value
+
+def _read_bool(name: str, default: bool) -> bool:
+    """Read a boolean environment variable."""
+
+    raw_value = os.getenv(name)
+
+    if raw_value is None:
+        return default
+
+    normalized_value = raw_value.strip().lower()
+
+    if normalized_value in {"1", "true", "yes", "on"}:
+        return True
+
+    if normalized_value in {"0", "false", "no", "off"}:
+        return False
+
+    raise ConfigurationError(
+        f"{name} must be a boolean value."
+    )

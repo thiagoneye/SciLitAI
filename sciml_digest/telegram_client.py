@@ -1,4 +1,4 @@
-"""Telegram Bot API client with retry/backoff and safe error handling."""
+"""Telegram Bot API client with retry/backoff and IPv4 fallback support."""
 
 from __future__ import annotations
 
@@ -25,13 +25,20 @@ class TelegramClient:
         chat_id: str,
         max_attempts: int = 4,
         timeout_seconds: float = 20.0,
+        force_ipv4: bool = False,
     ) -> None:
+        """Initialize the Telegram Bot API client."""
+
         self._endpoint = (
             f"https://api.telegram.org/bot{bot_token}/sendMessage"
         )
         self._chat_id = chat_id
         self._max_attempts = max_attempts
+
+        transport = _build_transport(force_ipv4=force_ipv4)
+
         self._client = httpx.Client(
+            transport=transport,
             timeout=httpx.Timeout(timeout_seconds),
             follow_redirects=True,
         )
@@ -42,15 +49,24 @@ class TelegramClient:
         self._client.close()
 
     def __enter__(self) -> "TelegramClient":
+        """Enter the client context manager."""
+
         return self
 
     def __exit__(self, *_: object) -> None:
+        """Close the client when leaving the context manager."""
+
         self.close()
 
     def send_messages(self, messages: list[str]) -> None:
         """Send all digest messages sequentially."""
 
         for index, message in enumerate(messages, start=1):
+            LOGGER.info(
+                "Sending Telegram message %s/%s.",
+                index,
+                len(messages),
+            )
             self._send_message(message)
             LOGGER.info(
                 "Telegram message %s/%s delivered.",
@@ -72,7 +88,10 @@ class TelegramClient:
 
         for attempt in range(1, self._max_attempts + 1):
             try:
-                response = self._client.post(self._endpoint, json=payload)
+                response = self._client.post(
+                    self._endpoint,
+                    json=payload,
+                )
 
                 if response.status_code in RETRIABLE_STATUS_CODES:
                     if attempt == self._max_attempts:
@@ -92,20 +111,35 @@ class TelegramClient:
 
                 if response.is_error:
                     raise TelegramError(
-                        f"Telegram API rejected the message "
+                        "Telegram API rejected the message "
                         f"(HTTP {response.status_code})."
                     )
 
-                body = response.json()
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise TelegramError(
+                        "Telegram returned a non-JSON success response."
+                    ) from exc
+
                 if not body.get("ok", False):
-                    raise TelegramError("Telegram API returned ok=false.")
+                    description = str(body.get("description", "unknown error"))
+                    raise TelegramError(
+                        f"Telegram API returned ok=false: {description}."
+                    )
+
                 return
 
+            except TelegramError:
+                raise
             except httpx.RequestError as exc:
                 last_error = exc
+
                 if attempt == self._max_attempts:
                     break
+
                 delay = _retry_delay(attempt)
+
                 # Não registrar a exceção completa: ela pode conter a URL com o token.
                 LOGGER.warning(
                     "Telegram network error (%s); retrying in %.1fs.",
@@ -113,14 +147,24 @@ class TelegramClient:
                     delay,
                 )
                 time.sleep(delay)
-            except ValueError as exc:
-                raise TelegramError(
-                    "Telegram returned a non-JSON success response."
-                ) from exc
 
+        error_name = type(last_error).__name__ if last_error else "unknown"
         raise TelegramError(
-            "Telegram delivery failed after all retry attempts."
+            "Telegram delivery failed after all retry attempts "
+            f"(last network error: {error_name})."
         ) from last_error
+
+
+def _build_transport(force_ipv4: bool) -> httpx.HTTPTransport:
+    """Build the HTTP transport, optionally binding connections to IPv4."""
+
+    if force_ipv4:
+        return httpx.HTTPTransport(
+            local_address="0.0.0.0",
+            retries=0,
+        )
+
+    return httpx.HTTPTransport(retries=0)
 
 
 def _telegram_retry_delay(

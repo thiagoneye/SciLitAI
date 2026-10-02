@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from sciml_digest.exceptions import SelectionError
 from sciml_digest.models import ArxivPaper, SelectedPaper
-from sciml_digest.taxonomy import SEARCH_CLUSTERS
+from sciml_digest.taxonomy import CLUSTER_WEIGHTS, SEARCH_CLUSTERS
 
 WORD_PATTERN = re.compile(r"\b\w+\b", flags=re.UNICODE)
 
@@ -59,44 +59,94 @@ def select_top_papers(
 
 
 def _relevance_score(paper: ArxivPaper) -> float:
-    """Score title/abstract term density plus thematic breadth."""
+    """Score term density using thematic cluster priorities."""
 
     title = paper.title.casefold()
     abstract = paper.abstract.casefold()
-    title_token_count = max(len(WORD_PATTERN.findall(title)), 1)
-    abstract_token_count = max(len(WORD_PATTERN.findall(abstract)), 1)
+
+    title_token_count = max(
+        len(WORD_PATTERN.findall(title)),
+        1,
+    )
+    abstract_token_count = max(
+        len(WORD_PATTERN.findall(abstract)),
+        1,
+    )
 
     weighted_title_hits = 0.0
     weighted_abstract_hits = 0.0
+
     matched_terms: set[str] = set()
     matched_clusters: set[str] = set()
 
     for cluster_name, terms in SEARCH_CLUSTERS.items():
+        cluster_weight = CLUSTER_WEIGHTS[cluster_name]
         cluster_matched = False
+
         for term in terms:
             normalized_term = term.casefold()
+
             term_weight = _term_weight(term)
-            title_count = _term_count(title, normalized_term)
-            abstract_count = _term_count(abstract, normalized_term)
+            weighted_term = term_weight * cluster_weight
+
+            title_count = _term_count(
+                title,
+                normalized_term,
+            )
+            abstract_count = _term_count(
+                abstract,
+                normalized_term,
+            )
 
             if title_count or abstract_count:
                 cluster_matched = True
                 matched_terms.add(normalized_term)
-                weighted_title_hits += term_weight * title_count
-                weighted_abstract_hits += term_weight * abstract_count
+
+                weighted_title_hits += (
+                    weighted_term * title_count
+                )
+
+                weighted_abstract_hits += (
+                    weighted_term * abstract_count
+                )
 
         if cluster_matched:
             matched_clusters.add(cluster_name)
 
-    title_density = weighted_title_hits / title_token_count
-    abstract_density = weighted_abstract_hits / abstract_token_count
+    title_density = (
+        weighted_title_hits / title_token_count
+    )
 
-    # O título recebe maior peso por representar um sinal temático mais forte.
-    density_score = 100.0 * ((3.0 * title_density) + abstract_density)
-    diversity_bonus = 0.35 * len(matched_terms)
-    cluster_bonus = 0.75 * len(matched_clusters)
+    abstract_density = (
+        weighted_abstract_hits / abstract_token_count
+    )
 
-    return round(density_score + diversity_bonus + cluster_bonus, 6)
+    # O título recebe maior peso por representar
+    # um sinal temático mais forte.
+    density_score = 100.0 * (
+        (3.0 * title_density)
+        + abstract_density
+    )
+
+    diversity_bonus = (
+        0.35 * len(matched_terms)
+    )
+
+    weighted_cluster_breadth = sum(
+        CLUSTER_WEIGHTS[cluster_name]
+        for cluster_name in matched_clusters
+    )
+
+    cluster_bonus = (
+        0.75 * weighted_cluster_breadth
+    )
+
+    return round(
+        density_score
+        + diversity_bonus
+        + cluster_bonus,
+        6,
+    )
 
 
 def _term_weight(term: str) -> float:

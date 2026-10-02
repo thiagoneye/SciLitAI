@@ -90,6 +90,8 @@ def run_pipeline(settings: Settings) -> None:
         bot_token=settings.telegram_bot_token,
         chat_id=settings.telegram_chat_id,
         max_attempts=settings.telegram_max_attempts,
+        timeout_seconds=settings.telegram_timeout_seconds,
+        force_ipv4=settings.telegram_force_ipv4,
     ) as telegram:
         telegram.send_messages(messages)
 
