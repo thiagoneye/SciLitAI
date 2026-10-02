@@ -8,72 +8,76 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
-AiApproach = Literal[
-    "PINNs",
-    "FNO",
-    "DeepONet",
-    "Neural Operator",
-    "MLP Surrogate",
-    "GNN",
-    "Hybrid SciML",
-    "Digital Twin",
-    "Uncertainty Quantification",
-    "Other SciML",
-]
+ScientificSource = Literal["arxiv", "semantic_scholar", "openalex"]
+SelectionBasis = Literal["relevance", "citations"]
+PublicationDateValidationSource = Literal["crossref", "datacite"]
+PublicationDatePrecision = Literal["day", "month", "year"]
 
 
-class ArxivPaper(BaseModel):
-    """Normalized and sanitized metadata for one arXiv paper."""
+class ScientificPaper(BaseModel):
+    """Normalized metadata for one scientific paper from any configured source."""
 
     model_config = ConfigDict(frozen=True)
 
-    arxiv_id: str
+    source: ScientificSource
+    source_id: str
     title: str
     authors: list[str]
     abstract: str
-    published_date: datetime
-    updated_date: datetime
-    arxiv_url: HttpUrl
-    pdf_url: HttpUrl
-    primary_category: str
+    publication_date: datetime
+    updated_date: datetime | None = None
+    source_publication_date: datetime | None = None
+    publication_date_verified: bool = False
+    publication_date_validation_source: PublicationDateValidationSource | None = None
+    publication_date_precision: PublicationDatePrecision | None = None
+    source_url: HttpUrl
+    pdf_url: HttpUrl | None = None
+    doi: str | None = None
+    arxiv_id: str | None = None
+    citation_count: int | None = Field(default=None, ge=0)
+    primary_category: str | None = None
     categories: list[str] = Field(default_factory=list)
+    source_keywords: list[str] = Field(default_factory=list)
     matched_clusters: list[str] = Field(default_factory=list)
 
 
 class EnrichedArticle(BaseModel):
-    """Structured Gemini output for one paper."""
+    """Structured Gemini enrichment shared by papers from every source."""
 
-    title: str = Field(description="Exact paper title.")
-    ai_approach: AiApproach = Field(
-        description="Primary Scientific Machine Learning approach used by the paper."
+    title: str = Field(description="Exact paper title from the source metadata.")
+    ai_approach: str = Field(
+        description="Primary AI, SciML, numerical, or data-driven approach used by the paper."
     )
     domain_application: str = Field(
-        description=(
-            "Primary physical or industrial application domain, for example "
-            "'Fluid Dynamics / Aerodynamics' or 'General Methodology'."
-        )
+        description="Primary physical, engineering, computational, or industrial domain."
     )
     executive_summary: str = Field(
         description=(
-            "Objective 2-3 sentence summary describing the problem, method, and "
-            "computational or scientific impact."
+            "Objective 2-3 sentence summary describing the problem, methodology, "
+            "and scientific or computational impact."
         )
     )
-    arxiv_url: HttpUrl = Field(description="Direct arXiv abstract page URL.")
+    keywords: list[str] = Field(
+        min_length=3,
+        max_length=6,
+        description="Three to six concise technical keywords grounded in the source metadata.",
+    )
+    source_url: HttpUrl = Field(description="Direct page URL for the source repository.")
 
 
 class SelectedPaper(BaseModel):
-    """Paper plus deterministic ranking metadata."""
+    """Paper plus deterministic source-specific ranking metadata."""
 
     model_config = ConfigDict(frozen=True)
 
-    paper: ArxivPaper
-    rank: int = Field(ge=1)
+    paper: ScientificPaper
+    rank: int = Field(ge=1, le=3)
+    selection_basis: SelectionBasis
     relevance_score: float = Field(ge=0.0)
 
 
 class DigestItem(BaseModel):
-    """Final item combining source metadata and AI enrichment."""
+    """Final digest item combining source metadata and AI enrichment."""
 
     model_config = ConfigDict(frozen=True)
 

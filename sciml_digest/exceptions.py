@@ -1,4 +1,4 @@
-"""Domain-specific exceptions for the SciML digest pipeline."""
+"""Domain-specific exceptions for the SciLitAI pipeline."""
 
 
 class DigestError(Exception):
@@ -13,8 +13,20 @@ class ArxivError(DigestError):
     """Raised when arXiv ingestion fails."""
 
 
+class SemanticScholarError(DigestError):
+    """Raised when Semantic Scholar ingestion fails."""
+
+
+class OpenAlexError(DigestError):
+    """Raised when OpenAlex ingestion fails."""
+
+
+class BibliographicMetadataError(DigestError):
+    """Raised when external bibliographic date validation fails."""
+
+
 class SelectionError(DigestError):
-    """Raised when the paper selection criteria cannot be satisfied."""
+    """Raised when source-specific selection criteria cannot be satisfied."""
 
 
 class GeminiError(DigestError):

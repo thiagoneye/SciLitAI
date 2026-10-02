@@ -2,7 +2,6 @@ name: SciLitAI Daily Digest
 
 on:
   schedule:
-    # 07:00 America/Sao_Paulo = 10:00 UTC under the current UTC-03 offset.
     - cron: "0 10 * * *"
   workflow_dispatch:
 
@@ -17,13 +16,31 @@ jobs:
   digest:
     name: Generate and send digest
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
+      OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+
       GEMINI_MODEL: gemini-3.1-flash-lite
+      PAPERS_PER_SOURCE: "3"
+
+      SEMANTIC_SCHOLAR_MIN_REQUEST_INTERVAL_SECONDS: "2.0"
+      SEMANTIC_SCHOLAR_MAX_ATTEMPTS: "6"
+
+      OPENALEX_LOOKBACK_DAYS: "60"
+      OPENALEX_MIN_RELEVANCE_SCORE: "10"
+      OPENALEX_VALIDATION_MAX_CANDIDATES: "25"
+      OPENALEX_REQUIRE_VALIDATED_DATE: "true"
+      OPENALEX_REQUIRE_DAY_PRECISION: "true"
+
+      TELEGRAM_FORCE_IPV4: "false"
+      TELEGRAM_TIMEOUT_SECONDS: "20"
+
+      LOG_LEVEL: "INFO"
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -50,5 +67,5 @@ jobs:
       - name: Run unit tests
         run: python -m pytest -q
 
-      - name: Run Daily SciML Digest
+      - name: Run SciLitAI Daily Digest
         run: python -m sciml_digest.main

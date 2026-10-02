@@ -1,12 +1,11 @@
-"""arXiv Atom API client with clustered queries, rate limiting, and retries."""
+"""arXiv Atom API client with clustered queries, pacing, and retries."""
 
 from __future__ import annotations
 
 import logging
-import random
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,7 +13,8 @@ import feedparser
 import httpx
 
 from sciml_digest.exceptions import ArxivError
-from sciml_digest.models import ArxivPaper
+from sciml_digest.models import ScientificPaper
+from sciml_digest.source_utils import chunked, clean_text, retry_delay
 from sciml_digest.taxonomy import SEARCH_CLUSTERS, TARGET_CATEGORIES
 
 LOGGER = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class ArxivClient:
         timeout_seconds: float = 30.0,
         max_attempts: int = 4,
         min_request_interval_seconds: float = 3.0,
-        user_agent: str = "SciLitAI/2.0",
+        user_agent: str = "SciLitAI/3.0",
     ) -> None:
         if min_request_interval_seconds < 3.0:
             raise ValueError("min_request_interval_seconds must be >= 3.0.")
@@ -66,7 +66,7 @@ class ArxivClient:
         end_utc: datetime,
         max_results_per_query: int = 100,
         terms_per_query: int = 12,
-    ) -> list[ArxivPaper]:
+    ) -> list[ScientificPaper]:
         """Fetch papers submitted or updated inside one strict UTC interval."""
 
         start_utc = _as_utc(start_utc)
@@ -76,13 +76,11 @@ class ArxivClient:
             raise ValueError("start_utc must be earlier than end_utc.")
         if max_results_per_query <= 0:
             raise ValueError("max_results_per_query must be > 0.")
-        if terms_per_query <= 0:
-            raise ValueError("terms_per_query must be > 0.")
 
-        papers_by_id: dict[str, ArxivPaper] = {}
+        papers_by_id: dict[str, ScientificPaper] = {}
 
         for cluster_name, terms in SEARCH_CLUSTERS.items():
-            for term_chunk in _chunked(terms, terms_per_query):
+            for term_chunk in chunked(terms, terms_per_query):
                 for date_field in DATE_FIELDS:
                     query = _build_query(
                         categories=TARGET_CATEGORIES,
@@ -117,24 +115,27 @@ class ArxivClient:
                         paper_with_cluster = paper.model_copy(
                             update={"matched_clusters": [cluster_name]}
                         )
-                        existing = papers_by_id.get(paper.arxiv_id)
+                        existing = papers_by_id.get(paper.source_id)
                         if existing is None:
-                            papers_by_id[paper.arxiv_id] = paper_with_cluster
+                            papers_by_id[paper.source_id] = paper_with_cluster
                         else:
-                            papers_by_id[paper.arxiv_id] = _merge_papers(
+                            papers_by_id[paper.source_id] = _merge_papers(
                                 existing,
                                 paper_with_cluster,
                             )
 
         papers = list(papers_by_id.values())
         papers.sort(
-            key=lambda paper: (paper.updated_date, paper.published_date),
+            key=lambda paper: (
+                paper.updated_date or paper.publication_date,
+                paper.publication_date,
+            ),
             reverse=True,
         )
         return papers
 
     def _request(self, params: dict[str, Any]) -> httpx.Response:
-        """Execute one arXiv request with pacing and bounded exponential backoff."""
+        """Execute one arXiv request with pacing and bounded retries."""
 
         last_error: Exception | None = None
 
@@ -152,7 +153,7 @@ class ArxivClient:
                             f"(HTTP {response.status_code})."
                         )
 
-                    delay = _retry_delay(
+                    delay = retry_delay(
                         attempt=attempt,
                         retry_after=response.headers.get("Retry-After"),
                         minimum_seconds=self._min_request_interval_seconds,
@@ -177,7 +178,7 @@ class ArxivClient:
                 if attempt == self._max_attempts:
                     break
 
-                delay = _retry_delay(
+                delay = retry_delay(
                     attempt=attempt,
                     minimum_seconds=self._min_request_interval_seconds,
                 )
@@ -202,14 +203,14 @@ class ArxivClient:
             time.sleep(remaining)
 
     @staticmethod
-    def _parse_feed(payload: str) -> list[ArxivPaper]:
-        """Parse and normalize an Atom feed into typed paper records."""
+    def _parse_feed(payload: str) -> list[ScientificPaper]:
+        """Parse and normalize an Atom feed into generic paper records."""
 
         feed = feedparser.parse(payload)
         if getattr(feed, "bozo", False) and not getattr(feed, "entries", []):
             raise ArxivError("arXiv returned an invalid or unreadable Atom feed.")
 
-        papers: list[ArxivPaper] = []
+        papers: list[ScientificPaper] = []
         for entry in feed.entries:
             try:
                 papers.append(_parse_entry(entry))
@@ -239,12 +240,10 @@ def _build_query(
     topic_clauses: list[str] = []
     for term in terms:
         escaped_term = term.replace('"', r'\"')
-        topic_clauses.append(
-            f'(ti:"{escaped_term}" OR abs:"{escaped_term}")'
-        )
+        topic_clauses.append(f'(ti:"{escaped_term}" OR abs:"{escaped_term}")')
 
     start_token = start_utc.strftime("%Y%m%d%H%M")
-    # A API trabalha com resolução de minuto; 23:59 cobre o último minuto de D-1.
+    # A API usa resolução de minuto; o minuto final cobre integralmente D-1.
     end_token = (end_utc - timedelta(minutes=1)).strftime("%Y%m%d%H%M")
 
     return (
@@ -254,16 +253,16 @@ def _build_query(
     )
 
 
-def _parse_entry(entry: Any) -> ArxivPaper:
+def _parse_entry(entry: Any) -> ScientificPaper:
     """Normalize one feedparser arXiv entry."""
 
     raw_id = str(entry["id"]).strip().rstrip("/")
     arxiv_id = _canonical_arxiv_id(raw_id)
 
-    title = _clean_text(str(entry["title"]))
-    abstract = _clean_text(str(entry["summary"]))
+    title = clean_text(str(entry["title"]))
+    abstract = clean_text(str(entry["summary"]))
     authors = [
-        _clean_text(str(author["name"]))
+        clean_text(str(author["name"]))
         for author in entry.get("authors", [])
         if author.get("name")
     ]
@@ -274,21 +273,24 @@ def _parse_entry(entry: Any) -> ArxivPaper:
     ]
     primary_category = _extract_primary_category(entry, categories)
 
-    published_date = _parse_datetime(str(entry["published"]))
+    publication_date = _parse_datetime(str(entry["published"]))
     updated_date = _parse_datetime(str(entry.get("updated", entry["published"])))
-
-    arxiv_url = f"https://arxiv.org/abs/{arxiv_id}"
+    source_url = f"https://arxiv.org/abs/{arxiv_id}"
     pdf_url = _extract_pdf_url(entry, arxiv_id)
+    doi = _extract_doi(entry)
 
-    return ArxivPaper(
-        arxiv_id=arxiv_id,
+    return ScientificPaper(
+        source="arxiv",
+        source_id=arxiv_id,
         title=title,
         authors=authors,
         abstract=abstract,
-        published_date=published_date,
+        publication_date=publication_date,
         updated_date=updated_date,
-        arxiv_url=arxiv_url,
+        source_url=source_url,
         pdf_url=pdf_url,
+        doi=doi,
+        arxiv_id=arxiv_id,
         primary_category=primary_category,
         categories=categories,
     )
@@ -327,16 +329,22 @@ def _extract_pdf_url(entry: Any, arxiv_id: str) -> str:
     return f"https://arxiv.org/pdf/{arxiv_id}"
 
 
+def _extract_doi(entry: Any) -> str | None:
+    """Extract DOI metadata when arXiv exposes it."""
+
+    value = entry.get("arxiv_doi")
+    if not value:
+        return None
+    if isinstance(value, dict):
+        value = value.get("value") or value.get("href")
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def _parse_datetime(value: str) -> datetime:
     """Parse an Atom timestamp and normalize it to UTC."""
 
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-
-
-def _clean_text(value: str) -> str:
-    """Collapse line breaks and duplicate whitespace."""
-
-    return re.sub(r"\s+", " ", value).strip()
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -348,20 +356,25 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _is_in_window(
-    paper: ArxivPaper,
+    paper: ScientificPaper,
     start_utc: datetime,
     end_utc: datetime,
 ) -> bool:
-    """Return whether submission or last update falls in the target interval."""
+    """Return whether publication or last update falls in the target interval."""
 
-    return (
-        start_utc <= paper.published_date < end_utc
-        or start_utc <= paper.updated_date < end_utc
+    published = start_utc <= paper.publication_date < end_utc
+    updated = (
+        paper.updated_date is not None
+        and start_utc <= paper.updated_date < end_utc
     )
+    return published or updated
 
 
-def _merge_papers(left: ArxivPaper, right: ArxivPaper) -> ArxivPaper:
-    """Merge duplicate records while preserving all matched search clusters."""
+def _merge_papers(
+    left: ScientificPaper,
+    right: ScientificPaper,
+) -> ScientificPaper:
+    """Merge duplicate arXiv records while preserving matched clusters."""
 
     merged_clusters = sorted(set(left.matched_clusters) | set(right.matched_clusters))
     merged_categories = list(dict.fromkeys([*left.categories, *right.categories]))
@@ -371,28 +384,3 @@ def _merge_papers(left: ArxivPaper, right: ArxivPaper) -> ArxivPaper:
             "categories": merged_categories,
         }
     )
-
-
-def _chunked(values: Sequence[str], chunk_size: int) -> Iterable[tuple[str, ...]]:
-    """Yield fixed-size chunks to keep arXiv query URLs bounded."""
-
-    for start in range(0, len(values), chunk_size):
-        yield tuple(values[start : start + chunk_size])
-
-
-def _retry_delay(
-    attempt: int,
-    retry_after: str | None = None,
-    minimum_seconds: float = 3.0,
-    max_seconds: float = 60.0,
-) -> float:
-    """Calculate bounded exponential backoff with jitter."""
-
-    if retry_after:
-        try:
-            return max(float(retry_after), minimum_seconds)
-        except ValueError:
-            pass
-
-    delay = min(minimum_seconds * (2 ** (attempt - 1)), max_seconds)
-    return delay + random.uniform(0.0, 0.75)

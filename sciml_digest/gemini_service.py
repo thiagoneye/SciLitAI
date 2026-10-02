@@ -10,7 +10,7 @@ from google import genai
 from google.genai import errors, types
 
 from sciml_digest.exceptions import GeminiError
-from sciml_digest.models import ArxivPaper, EnrichedArticle
+from sciml_digest.models import EnrichedArticle, ScientificPaper
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ RETRIABLE_CODES = {408, 429, 500, 502, 503, 504}
 
 
 class GeminiService:
-    """Enrich paper metadata using Gemini and a Pydantic response schema."""
+    """Enrich normalized paper metadata using Gemini structured output."""
 
     def __init__(
         self,
@@ -30,8 +30,8 @@ class GeminiService:
         self._model = model
         self._max_attempts = max_attempts
 
-    def enrich(self, paper: ArxivPaper) -> EnrichedArticle:
-        """Classify and summarize one paper with structured output."""
+    def enrich(self, paper: ScientificPaper) -> EnrichedArticle:
+        """Classify, summarize, and extract keywords for one paper."""
 
         prompt = _build_prompt(paper)
         last_error: Exception | None = None
@@ -56,11 +56,11 @@ class GeminiService:
                 else:
                     raise GeminiError("Gemini returned an empty structured response.")
 
-                # Título e URL são dados de origem; nunca devem ser alterados pelo LLM.
+                # Título e URL são dados de origem e não devem ser alterados pelo LLM.
                 return result.model_copy(
                     update={
                         "title": paper.title,
-                        "arxiv_url": paper.arxiv_url,
+                        "source_url": paper.source_url,
                     }
                 )
 
@@ -94,36 +94,55 @@ class GeminiService:
         raise GeminiError("Gemini enrichment failed after all retries.") from last_error
 
 
-def _build_prompt(paper: ArxivPaper) -> str:
-    """Build a constrained extraction prompt from source metadata."""
+def _build_prompt(paper: ScientificPaper) -> str:
+    """Build a constrained extraction prompt from normalized source metadata."""
 
     authors = ", ".join(paper.authors) if paper.authors else "Not provided"
     categories = ", ".join(paper.categories) if paper.categories else "Not provided"
+    source_keywords = (
+        ", ".join(paper.source_keywords)
+        if paper.source_keywords
+        else "Not provided"
+    )
+    citation_count = (
+        str(paper.citation_count)
+        if paper.citation_count is not None
+        else "Not provided"
+    )
 
     return f"""
-You are a Scientific Machine Learning research analyst.
+You are a scientific literature analyst focused on Scientific Machine Learning,
+computational engineering, numerical methods, and industrial data systems.
 
-Analyze ONLY the metadata below. Do not invent numerical speedups, accuracy gains,
-datasets, equations, or claims that are not explicitly supported by the title or
-abstract.
+Analyze ONLY the source metadata below. Do not invent numerical speedups, accuracy
+gains, datasets, equations, experiments, or claims that are not supported by the
+title, abstract, or source metadata.
 
 Required behavior:
 - Keep `title` exactly equal to the source title.
-- Choose the closest `ai_approach` value allowed by the response schema.
-- Use a concise, technically precise `domain_application`.
+- Describe the primary `ai_approach` concisely and technically.
+- Use a concise `domain_application`.
 - Write `executive_summary` in Brazilian Portuguese, in 2 to 3 objective sentences.
 - The summary must state: (1) the problem, (2) the proposed methodology, and
-  (3) the scientific/computational impact. If the abstract does not quantify a
-  gain, describe it qualitatively instead of inventing a number.
-- Keep `arxiv_url` exactly equal to the source arXiv URL.
+  (3) the scientific, computational, or industrial impact.
+- If the abstract does not quantify a gain, describe it qualitatively.
+- Return 3 to 6 concise technical `keywords` grounded in the title and abstract.
+- Prefer repository-provided keywords when they are consistent with the paper;
+  otherwise extract faithful keywords from the title and abstract.
+- Keep `source_url` exactly equal to the source repository URL.
 
 SOURCE METADATA
-arXiv ID: {paper.arxiv_id}
+Repository: {paper.source}
+Source ID: {paper.source_id}
 Title: {paper.title}
 Authors: {authors}
-Categories: {categories}
-Published: {paper.published_date.isoformat()}
-arXiv URL: {paper.arxiv_url}
+Categories/fields: {categories}
+Repository keywords: {source_keywords}
+Published: {paper.publication_date.isoformat()}
+Updated: {paper.updated_date.isoformat() if paper.updated_date else "Not provided"}
+Citation count: {citation_count}
+DOI: {paper.doi or "Not provided"}
+Source URL: {paper.source_url}
 Abstract:
 {paper.abstract}
 """.strip()
@@ -137,4 +156,4 @@ def _retry_delay(
     """Calculate bounded exponential backoff with jitter."""
 
     delay = min(base_seconds * (2 ** (attempt - 1)), max_seconds)
-    return delay + random.uniform(0.0, 0.75)
+    return delay + random.uniform(0.0, 1.0)
