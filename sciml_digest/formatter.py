@@ -39,10 +39,7 @@ def build_telegram_messages(
     _validate_source_counts(items)
 
     blocks = [
-        (
-            "<b>SciLitAI — Scientific Literature Digest</b>\n"
-            f"<i>Execução UTC: {html.escape(run_date.isoformat())}</i>"
-        )
+        "<b>SciLitAI — Scientific Literature Digest</b>"
     ]
 
     for source in SOURCE_ORDER:
@@ -74,8 +71,6 @@ def _format_item(item: DigestItem) -> str:
     enriched = item.enriched
 
     title = html.escape(enriched.title)
-    approach = html.escape(enriched.ai_approach)
-    domain = html.escape(enriched.domain_application)
     summary = html.escape(enriched.executive_summary)
     authors = html.escape(_format_authors(paper.authors))
     keywords = html.escape(", ".join(enriched.keywords))
@@ -84,9 +79,6 @@ def _format_item(item: DigestItem) -> str:
     source_name = SOURCE_NAMES[paper.source]
 
     metadata_lines = [
-        f"<b>Fonte:</b> {html.escape(source_name)}",
-        f"<b>Abordagem:</b> {approach}",
-        f"<b>Domínio:</b> {domain}",
         f"<b>Autores:</b> {authors}",
         f"<b>Publicado:</b> {published}",
     ]
@@ -111,17 +103,10 @@ def _format_item(item: DigestItem) -> str:
             f"<b>Score temático:</b> {item.selected.relevance_score:.3f}"
         )
 
-    if paper.citation_count is not None:
+    if paper.source == "openalex" and paper.citation_count is not None:
         metadata_lines.append(f"<b>Citações:</b> {paper.citation_count}")
 
     metadata_lines.append(f"<b>Palavras-chave:</b> {keywords}")
-
-    tags = " ".join(
-        [
-            _to_hashtag(enriched.ai_approach),
-            _to_hashtag(enriched.domain_application),
-        ]
-    )
 
     links = [f'<a href="{source_url}">{html.escape(source_name)}</a>']
     if paper.pdf_url is not None:
@@ -137,8 +122,7 @@ def _format_item(item: DigestItem) -> str:
     return (
         f"<b>{item.selected.rank}. {title}</b>\n"
         f"{metadata}\n"
-        f"{summary}\n"
-        f"{tags}\n"
+        f"<b>Resumo:</b> {summary}\n"
         f"{rendered_links}"
     )
 
@@ -264,13 +248,6 @@ def _format_authors(authors: list[str]) -> str:
     if len(authors) <= 4:
         return ", ".join(authors)
     return f"{', '.join(authors[:4])} et al."
-
-
-def _to_hashtag(value: str) -> str:
-    """Normalize a label to a compact Telegram hashtag."""
-
-    normalized = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
-    return f"#{normalized}" if normalized else "#SciML"
 
 
 def _doi_url(doi: str) -> str:

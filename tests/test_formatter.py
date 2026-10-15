@@ -52,8 +52,8 @@ def _item(source: str, rank: int) -> DigestItem:
     return DigestItem(selected=selected, enriched=enriched)
 
 
-def test_formatter_builds_three_sections_and_keywords() -> None:
-    """Render three papers per source and include keywords in Telegram output."""
+def test_formatter_builds_three_sections_without_removed_metadata() -> None:
+    """Render the requested paper details without removed metadata fields."""
 
     items = [
         _item(source, rank)
@@ -69,6 +69,13 @@ def test_formatter_builds_three_sections_and_keywords() -> None:
     assert "OpenAlex — Top 3" in rendered
     assert "Palavras-chave:" in rendered
     assert "PINNs, CFD, surrogate modeling" in rendered
+    assert "<b>Resumo:</b> Resumo técnico objetivo em português." in rendered
+    assert "Execução UTC:" not in rendered
+    assert "Fonte:" not in rendered
+    assert "Abordagem:" not in rendered
+    assert "Domínio:" not in rendered
+    assert "#" not in rendered
+    assert rendered.count("<b>Citações:</b> 25") == 3
 
 
 def test_formatter_renders_partial_digest_with_unavailable_source_note() -> None:

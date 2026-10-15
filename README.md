@@ -49,7 +49,7 @@ The current cluster priorities are:
 ```text
 sciml_pinns                         5.0
 neural_operators_rom_surrogates    4.0
-cfd_rheology_fem_generative_flow   2.0
+cfd_rheology_fem_generative_flow   3.0
 industry40_uns_predictive_maintenance 2.0
 uq_probabilistic_methods           1.0
 ```
@@ -192,13 +192,10 @@ Each paper includes:
 ```text
 rank
 title
-source
-AI/methodological approach
-domain
 authors
 publication/update date
 relevance score when applicable
-citation count when available
+OpenAlex citation count
 keywords
 executive summary
 source/PDF/DOI links when available
