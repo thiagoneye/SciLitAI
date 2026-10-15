@@ -32,7 +32,7 @@ class Settings:
     semantic_scholar_timeout_seconds: float = 30.0
     semantic_scholar_max_attempts: int = 4
     semantic_scholar_min_request_interval_seconds: float = 1.0
-    openalex_lookback_days: int = 60
+    openalex_lookback_days: int = 365
     openalex_max_results_per_query: int = 50
     openalex_timeout_seconds: float = 30.0
     openalex_max_attempts: int = 4
@@ -122,7 +122,7 @@ class Settings:
             ),
             openalex_lookback_days=_read_positive_int(
                 "OPENALEX_LOOKBACK_DAYS",
-                60,
+                365,
             ),
             openalex_max_results_per_query=_read_positive_int(
                 "OPENALEX_MAX_RESULTS_PER_QUERY",

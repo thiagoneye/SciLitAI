@@ -10,9 +10,15 @@ from sciml_digest.bibliographic_date_client import (
     BibliographicDateClient,
     validate_openalex_publication_dates,
 )
+from sciml_digest.exceptions import DigestError, SelectionError
 from sciml_digest.formatter import build_telegram_messages
 from sciml_digest.gemini_service import GeminiService
-from sciml_digest.models import DigestItem, ScientificPaper, SelectedPaper
+from sciml_digest.models import (
+    DigestItem,
+    ScientificPaper,
+    SelectedPaper,
+    ScientificSource,
+)
 from sciml_digest.openalex_client import OpenAlexClient
 from sciml_digest.selector import (
     rank_openalex_candidates,
@@ -50,75 +56,91 @@ def run_pipeline(settings: Settings) -> None:
         days=settings.openalex_lookback_days - 1
     )
 
-    arxiv_candidates = _fetch_arxiv(
-        settings,
-        arxiv_start_utc,
-        arxiv_end_utc,
-    )
-    semantic_candidates = _fetch_semantic_scholar(
-        settings,
-        semantic_start_date,
-        semantic_end_date,
-    )
-    openalex_candidates = _fetch_openalex(
-        settings,
-        openalex_start_date,
-        openalex_end_date,
-    )
-
     seen_identity_keys: set[str] = set()
+    source_statuses: dict[ScientificSource, str] = {}
 
-    arxiv_selected = select_arxiv_papers(
-        arxiv_candidates,
-        window_start_utc=arxiv_start_utc,
-        window_end_utc=arxiv_end_utc,
-        limit=settings.papers_per_source,
-    )
-    register_identity_keys(arxiv_selected, seen_identity_keys)
+    try:
+        arxiv_candidates = _fetch_arxiv(
+            settings,
+            arxiv_start_utc,
+            arxiv_end_utc,
+        )
+        arxiv_selected = select_arxiv_papers(
+            arxiv_candidates,
+            window_start_utc=arxiv_start_utc,
+            window_end_utc=arxiv_end_utc,
+            limit=settings.papers_per_source,
+        )
+        register_identity_keys(arxiv_selected, seen_identity_keys)
+    except DigestError as exc:
+        _record_source_failure("arxiv", exc, source_statuses)
+        arxiv_selected = []
 
-    semantic_selected = select_semantic_scholar_papers(
-        semantic_candidates,
-        start_date=semantic_start_date,
-        end_date=semantic_end_date,
-        limit=settings.papers_per_source,
-        excluded_identity_keys=seen_identity_keys,
-    )
-    register_identity_keys(semantic_selected, seen_identity_keys)
+    try:
+        semantic_candidates = _fetch_semantic_scholar(
+            settings,
+            semantic_start_date,
+            semantic_end_date,
+        )
+        semantic_selected = select_semantic_scholar_papers(
+            semantic_candidates,
+            start_date=semantic_start_date,
+            end_date=semantic_end_date,
+            limit=settings.papers_per_source,
+            excluded_identity_keys=seen_identity_keys,
+        )
+        register_identity_keys(semantic_selected, seen_identity_keys)
+    except DigestError as exc:
+        _record_source_failure("semantic_scholar", exc, source_statuses)
+        semantic_selected = []
 
-    openalex_ranked = rank_openalex_candidates(
-        openalex_candidates,
-        start_date=openalex_start_date,
-        end_date=openalex_end_date,
-        excluded_identity_keys=seen_identity_keys,
-        min_relevance_score=settings.openalex_min_relevance_score,
-    )
-    LOGGER.info(
-        "OpenAlex thematic gate retained %s unique ranked candidates.",
-        len(openalex_ranked),
-    )
+    try:
+        openalex_candidates = _fetch_openalex(
+            settings,
+            openalex_start_date,
+            openalex_end_date,
+        )
+        openalex_ranked = rank_openalex_candidates(
+            openalex_candidates,
+            start_date=openalex_start_date,
+            end_date=openalex_end_date,
+            excluded_identity_keys=seen_identity_keys,
+            min_relevance_score=settings.openalex_min_relevance_score,
+        )
+        LOGGER.info(
+            "OpenAlex thematic gate retained %s unique ranked candidates.",
+            len(openalex_ranked),
+        )
 
-    openalex_validated = _validate_openalex_dates(
-        settings,
-        openalex_ranked,
-        openalex_start_date,
-        openalex_end_date,
-    )
+        openalex_validated = _validate_openalex_dates(
+            settings,
+            openalex_ranked,
+            openalex_start_date,
+            openalex_end_date,
+        )
 
-    openalex_selected = select_openalex_papers(
-        openalex_validated,
-        start_date=openalex_start_date,
-        end_date=openalex_end_date,
-        limit=settings.papers_per_source,
-        excluded_identity_keys=seen_identity_keys,
-        min_relevance_score=settings.openalex_min_relevance_score,
-    )
-    register_identity_keys(openalex_selected, seen_identity_keys)
+        openalex_selected = select_openalex_papers(
+            openalex_validated,
+            start_date=openalex_start_date,
+            end_date=openalex_end_date,
+            limit=settings.papers_per_source,
+            excluded_identity_keys=seen_identity_keys,
+            min_relevance_score=settings.openalex_min_relevance_score,
+        )
+        register_identity_keys(openalex_selected, seen_identity_keys)
+    except DigestError as exc:
+        _record_source_failure("openalex", exc, source_statuses)
+        openalex_selected = []
 
     selected = [
         *arxiv_selected,
         *semantic_selected,
         *openalex_selected,
     ]
+    if not selected:
+        raise SelectionError(
+            "No papers could be selected from arXiv, Semantic Scholar, or OpenAlex."
+        )
 
     _log_selection(selected)
 
@@ -148,6 +170,7 @@ def run_pipeline(settings: Settings) -> None:
     messages = build_telegram_messages(
         digest_items,
         run_date=today_utc,
+        source_statuses=source_statuses,
     )
 
     LOGGER.info("Formatted digest into %s Telegram message(s).", len(messages))
@@ -307,3 +330,31 @@ def _log_selection(selected: list[SelectedPaper]) -> None:
             paper.source_id,
             metric,
         )
+
+
+def _record_source_failure(
+    source: ScientificSource,
+    error: DigestError,
+    source_statuses: dict[ScientificSource, str],
+) -> None:
+    """Log a source-specific failure and describe it in the partial digest."""
+
+    if isinstance(error, SelectionError):
+        status = "Não foram encontrados artigos únicos elegíveis em quantidade suficiente."
+        LOGGER.warning(
+            "Source=%s had insufficient eligible papers (%s: %s); "
+            "continuing without it.",
+            source,
+            type(error).__name__,
+            error,
+        )
+    else:
+        status = "Falha na consulta ou validação dos dados; consulte os logs."
+        LOGGER.error(
+            "Source=%s failed; continuing without it (%s: %s).",
+            source,
+            type(error).__name__,
+            error,
+        )
+
+    source_statuses[source] = status

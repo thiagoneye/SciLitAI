@@ -67,6 +67,8 @@ class OpenAlexClient:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        headers.pop("Authorization", None)
+        self._api_key = api_key
         self._max_attempts = max_attempts
         self._min_request_interval_seconds = min_request_interval_seconds
         self._last_request_started_at: float | None = None
@@ -175,7 +177,13 @@ class OpenAlexClient:
 
             try:
                 self._last_request_started_at = time.monotonic()
-                response = self._client.get(OPENALEX_WORKS_URL, params=params)
+                request_params = dict(params)
+                if self._api_key:
+                    request_params["api_key"] = self._api_key
+                response = self._client.get(
+                    OPENALEX_WORKS_URL,
+                    params=request_params,
+                )
 
                 if response.status_code in RETRIABLE_STATUS_CODES:
                     if attempt == self._max_attempts:

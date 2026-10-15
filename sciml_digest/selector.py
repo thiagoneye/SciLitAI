@@ -375,9 +375,16 @@ def _normalize_doi(doi: str) -> str:
     """Normalize DOI URL and prefix variants to a canonical identifier."""
 
     normalized = doi.strip().casefold()
-    for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+    for prefix in (
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "http://dx.doi.org/",
+        "doi:",
+    ):
         if normalized.startswith(prefix):
             normalized = normalized[len(prefix) :]
+            break
     return normalized.strip()
 
 

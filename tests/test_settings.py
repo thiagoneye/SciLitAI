@@ -66,7 +66,7 @@ def test_openalex_defaults_are_strict() -> None:
     )
 
     settings.validate()
-    assert settings.openalex_lookback_days == 60
+    assert settings.openalex_lookback_days == 365
     assert settings.openalex_min_relevance_score == 10.0
     assert settings.openalex_require_validated_date is True
     assert settings.openalex_require_day_precision is True

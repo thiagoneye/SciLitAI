@@ -20,9 +20,15 @@ from sciml_digest.bibliographic_date_client import (
     BibliographicDateClient,
     validate_openalex_publication_dates,
 )
+from sciml_digest.exceptions import DigestError, SelectionError
 from sciml_digest.formatter import build_telegram_messages
 from sciml_digest.gemini_service import GeminiService
-from sciml_digest.models import DigestItem, ScientificPaper, SelectedPaper
+from sciml_digest.models import (
+    DigestItem,
+    ScientificPaper,
+    SelectedPaper,
+    ScientificSource,
+)
 from sciml_digest.openalex_client import OpenAlexClient
 from sciml_digest.selector import (
     rank_openalex_candidates,
@@ -81,6 +87,37 @@ def run_stage(name: str, operation: Callable[[], T]) -> T:
     elapsed = time.monotonic() - started_at
     print(f"PASSED in {elapsed:.1f}s")
     return result
+
+
+def run_optional_source_stage(
+    name: str,
+    source: ScientificSource,
+    operation: Callable[[], T],
+    fallback: T,
+    source_statuses: dict[ScientificSource, str],
+) -> T:
+    """Run one source stage without preventing other repositories from running."""
+
+    try:
+        return run_stage(name, operation)
+    except SelectionError as exc:
+        source_statuses[source] = (
+            "Não foram encontrados artigos únicos elegíveis em quantidade suficiente."
+        )
+        print(
+            f"CONTINUING without {source}: insufficient eligible papers "
+            f"({type(exc).__name__})."
+        )
+    except DigestError as exc:
+        source_statuses[source] = (
+            "Falha na consulta ou validação dos dados; consulte os logs."
+        )
+        print(
+            f"CONTINUING without {source}: source failure "
+            f"({type(exc).__name__})."
+        )
+
+    return fallback
 
 
 def print_settings(settings: Settings) -> None:
@@ -353,85 +390,123 @@ def main() -> int:
             f"[{openalex_start_date}, {openalex_end_date}]"
         )
 
-        arxiv_candidates = run_stage(
+        source_statuses: dict[ScientificSource, str] = {}
+
+        arxiv_candidates = run_optional_source_stage(
             "1/10 arXiv live retrieval",
+            "arxiv",
             lambda: fetch_arxiv(settings, arxiv_start_utc, arxiv_end_utc),
+            [],
+            source_statuses,
         )
-        semantic_candidates = run_stage(
+        semantic_candidates = run_optional_source_stage(
             "2/10 Semantic Scholar live retrieval",
+            "semantic_scholar",
             lambda: fetch_semantic_scholar(
                 settings,
                 semantic_start_date,
                 semantic_end_date,
             ),
+            [],
+            source_statuses,
         )
-        openalex_candidates = run_stage(
+        openalex_candidates = run_optional_source_stage(
             "3/10 OpenAlex semantic live retrieval",
+            "openalex",
             lambda: fetch_openalex(
                 settings,
                 openalex_start_date,
                 openalex_end_date,
             ),
+            [],
+            source_statuses,
         )
 
         seen_identity_keys: set[str] = set()
 
-        arxiv_selected = run_stage(
-            "4/10 arXiv selection",
-            lambda: select_arxiv_papers(
-                arxiv_candidates,
-                window_start_utc=arxiv_start_utc,
-                window_end_utc=arxiv_end_utc,
-                limit=settings.papers_per_source,
-            ),
-        )
+        if "arxiv" in source_statuses:
+            arxiv_selected: list[SelectedPaper] = []
+        else:
+            arxiv_selected = run_optional_source_stage(
+                "4/10 arXiv selection",
+                "arxiv",
+                lambda: select_arxiv_papers(
+                    arxiv_candidates,
+                    window_start_utc=arxiv_start_utc,
+                    window_end_utc=arxiv_end_utc,
+                    limit=settings.papers_per_source,
+                ),
+                [],
+                source_statuses,
+            )
         register_identity_keys(arxiv_selected, seen_identity_keys)
 
-        semantic_selected = run_stage(
-            "5/10 Semantic Scholar selection and cross-source deduplication",
-            lambda: select_semantic_scholar_papers(
-                semantic_candidates,
-                start_date=semantic_start_date,
-                end_date=semantic_end_date,
-                limit=settings.papers_per_source,
-                excluded_identity_keys=seen_identity_keys,
-            ),
-        )
+        if "semantic_scholar" in source_statuses:
+            semantic_selected: list[SelectedPaper] = []
+        else:
+            semantic_selected = run_optional_source_stage(
+                "5/10 Semantic Scholar selection and cross-source deduplication",
+                "semantic_scholar",
+                lambda: select_semantic_scholar_papers(
+                    semantic_candidates,
+                    start_date=semantic_start_date,
+                    end_date=semantic_end_date,
+                    limit=settings.papers_per_source,
+                    excluded_identity_keys=seen_identity_keys,
+                ),
+                [],
+                source_statuses,
+            )
         register_identity_keys(semantic_selected, seen_identity_keys)
 
-        openalex_ranked = run_stage(
-            "6/10 OpenAlex thematic gate and citation ranking",
-            lambda: rank_openalex_candidates(
-                openalex_candidates,
-                start_date=openalex_start_date,
-                end_date=openalex_end_date,
-                excluded_identity_keys=seen_identity_keys,
-                min_relevance_score=settings.openalex_min_relevance_score,
-            ),
-        )
-        print(f"OpenAlex thematically eligible ranked papers: {len(openalex_ranked)}")
+        if "openalex" in source_statuses:
+            openalex_selected: list[SelectedPaper] = []
+        else:
+            openalex_ranked = run_optional_source_stage(
+                "6/10 OpenAlex thematic gate and citation ranking",
+                "openalex",
+                lambda: rank_openalex_candidates(
+                    openalex_candidates,
+                    start_date=openalex_start_date,
+                    end_date=openalex_end_date,
+                    excluded_identity_keys=seen_identity_keys,
+                    min_relevance_score=settings.openalex_min_relevance_score,
+                ),
+                [],
+                source_statuses,
+            )
+            print(
+                "OpenAlex thematically eligible ranked papers: "
+                f"{len(openalex_ranked)}"
+            )
 
-        openalex_validated = run_stage(
-            "7/10 OpenAlex DOI publication-date validation",
-            lambda: validate_openalex_dates(
-                settings,
-                openalex_ranked,
-                openalex_start_date,
-                openalex_end_date,
-            ),
-        )
+            openalex_validated = run_optional_source_stage(
+                "7/10 OpenAlex DOI publication-date validation",
+                "openalex",
+                lambda: validate_openalex_dates(
+                    settings,
+                    openalex_ranked,
+                    openalex_start_date,
+                    openalex_end_date,
+                ),
+                [],
+                source_statuses,
+            )
 
-        openalex_selected = run_stage(
-            "8/10 OpenAlex final Top 3 selection",
-            lambda: select_openalex_papers(
-                openalex_validated,
-                start_date=openalex_start_date,
-                end_date=openalex_end_date,
-                limit=settings.papers_per_source,
-                excluded_identity_keys=seen_identity_keys,
-                min_relevance_score=settings.openalex_min_relevance_score,
-            ),
-        )
+            openalex_selected = run_optional_source_stage(
+                "8/10 OpenAlex final Top 3 selection",
+                "openalex",
+                lambda: select_openalex_papers(
+                    openalex_validated,
+                    start_date=openalex_start_date,
+                    end_date=openalex_end_date,
+                    limit=settings.papers_per_source,
+                    excluded_identity_keys=seen_identity_keys,
+                    min_relevance_score=settings.openalex_min_relevance_score,
+                ),
+                [],
+                source_statuses,
+            )
         register_identity_keys(openalex_selected, seen_identity_keys)
 
         selected = [
@@ -439,12 +514,15 @@ def main() -> int:
             *semantic_selected,
             *openalex_selected,
         ]
-        expected_total = settings.papers_per_source * 3
-        if len(selected) != expected_total:
-            raise AssertionError(
-                f"Expected {expected_total} selected papers, got {len(selected)}."
+        if not selected:
+            raise SelectionError(
+                "No papers could be selected from any repository."
             )
+        if len(selected) > settings.papers_per_source * 3:
+            raise AssertionError("The selected paper count exceeds source limits.")
         print_selection(selected)
+        for source, status in source_statuses.items():
+            print(f"Source omitted ({source}): {status}")
 
         digest_items = run_stage(
             "9/10 Gemini enrichment for all selected papers",
@@ -456,6 +534,7 @@ def main() -> int:
             lambda: build_telegram_messages(
                 digest_items,
                 run_date=today_utc,
+                source_statuses=source_statuses,
             ),
         )
 
@@ -475,11 +554,21 @@ def main() -> int:
             )
 
         print("\n" + "=" * 88)
-        print("SciLitAI END-TO-END TEST PASSED")
+        print(
+            "SciLitAI END-TO-END TEST PASSED WITH SOURCE WARNINGS"
+            if source_statuses
+            else "SciLitAI END-TO-END TEST PASSED"
+        )
         if not args.send_telegram:
-            print("Status: all stages passed except live Telegram delivery, which was skipped.")
+            print(
+                "Status: live Telegram delivery was skipped; "
+                f"omitted sources: {len(source_statuses)}."
+            )
         else:
-            print("Status: all live stages, including Telegram delivery, passed.")
+            print(
+                "Status: all selected papers were processed and Telegram delivery "
+                f"passed; omitted sources: {len(source_statuses)}."
+            )
         print("=" * 88)
         return 0
 

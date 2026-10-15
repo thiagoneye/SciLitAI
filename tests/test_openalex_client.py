@@ -2,7 +2,10 @@
 
 from datetime import date
 
+import httpx
+
 from sciml_digest.openalex_client import (
+    OpenAlexClient,
     _build_openalex_filter,
     _parse_work,
     _reconstruct_abstract,
@@ -84,3 +87,30 @@ def test_parse_openalex_work_preserves_source_date_and_metadata() -> None:
         "computational fluid dynamics",
     ]
     assert paper.doi == "https://doi.org/10.1000/openalex"
+
+
+def test_openalex_api_key_is_sent_as_query_parameter(monkeypatch) -> None:
+    """Send configured API keys using OpenAlex's api_key query parameter."""
+
+    client = OpenAlexClient(api_key="test-api-key")
+    captured: dict[str, object] = {}
+
+    def fake_get(url: str, *, params: dict[str, object]) -> httpx.Response:
+        captured.update(params)
+        return httpx.Response(
+            200,
+            json={},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(client._client, "get", fake_get)
+    try:
+        client._request({"search.semantic": "scientific machine learning"})
+    finally:
+        client.close()
+
+    assert "Authorization" not in client._client.headers
+    assert captured == {
+        "search.semantic": "scientific machine learning",
+        "api_key": "test-api-key",
+    }

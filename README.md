@@ -22,16 +22,21 @@ Semantic Scholar
   -> Top 3
 
 OpenAlex
-  -> papers published in the last 60 calendar days
+  -> papers published in the last 365 calendar days
   -> thematic filtering
   -> citation-count ranking
   -> Top 3
 
-3 + 3 + 3 = 9 papers
+up to 3 + 3 + 3 = 9 papers
   -> cross-source deduplication
   -> Gemini enrichment + keyword extraction
   -> Telegram HTML digest
 ```
+
+If one repository fails or cannot provide three unique eligible papers, that
+source is logged and omitted from the run. The other repositories continue, and
+the Telegram digest includes a note for unavailable sources. The run stops only
+if no papers can be selected from any repository.
 
 Cross-source deduplication uses DOI, arXiv ID when available, and normalized title. Source precedence is arXiv -> Semantic Scholar -> OpenAlex. If a later source returns a paper already selected from an earlier source, SciLitAI backfills it with the next eligible candidate from that source.
 
@@ -42,11 +47,11 @@ The taxonomy is centralized in `sciml_digest/taxonomy.py` and contains five them
 The current cluster priorities are:
 
 ```text
-sciml_pinns                         2.0
-neural_operators_rom_surrogates    2.0
-cfd_rheology_fem_generative_flow   1.0
-industry40_uns_predictive_maintenance 1.0
-uq_probabilistic_methods           0.5
+sciml_pinns                         5.0
+neural_operators_rom_surrogates    4.0
+cfd_rheology_fem_generative_flow   2.0
+industry40_uns_predictive_maintenance 2.0
+uq_probabilistic_methods           1.0
 ```
 
 The relevance score weights title matches more strongly than abstract matches and multiplies term contributions by these cluster priorities.
@@ -89,13 +94,11 @@ The API returns relevance-ranked candidates, which are then merged and reranked 
 
 ## OpenAlex selection
 
-OpenAlex searches the same thematic taxonomy over works published in the last 60 calendar dates, including the run date.
+OpenAlex searches the same thematic taxonomy over works published in the last 365 calendar dates, including the run date.
 
-Queries use Boolean OR search expressions and request:
-
-```text
-sort=cited_by_count:desc
-```
+Queries use OpenAlex semantic search with one descriptive query per thematic
+cluster. Search results are then locally filtered by publication date and work
+type; the client does not request a citation sort from the API.
 
 The final local ordering uses:
 
@@ -105,11 +108,12 @@ The final local ordering uses:
 3. publication date descending
 ```
 
-Therefore the selected OpenAlex section is explicitly the **Top 3 most-cited eligible papers in the last 60 days**.
+Therefore the selected OpenAlex section is explicitly the **Top 3 most-cited eligible papers in the last 365 days**.
 
 When OpenAlex provides work keywords, they are preserved in normalized source metadata and supplied to Gemini as additional evidence.
 
-`OPENALEX_API_KEY` is optional.
+`OPENALEX_API_KEY` is optional. When supplied, it is sent as OpenAlex's `api_key`
+query parameter.
 
 ## Relevance ranking
 
@@ -180,7 +184,7 @@ The Telegram digest is organized into three sections:
 ```text
 arXiv — Top 3 relevantes publicados/atualizados em D-1
 Semantic Scholar — Top 3 relevantes dos últimos 30 dias
-OpenAlex — Top 3 mais citados dos últimos 60 dias
+OpenAlex — Top 3 mais citados dos últimos 365 dias
 ```
 
 Each paper includes:
@@ -290,8 +294,12 @@ schedule:
 
 It also supports manual execution through `workflow_dispatch`.
 
-The runner compiles the Python source, executes the unit tests, and only then runs the live multi-source pipeline. The job timeout is 30 minutes to accommodate repository pacing, transient API retries, and nine Gemini enrichment calls.
+The runner compiles the Python source, executes the unit tests, and only then runs the live multi-source pipeline. The job timeout is 30 minutes to accommodate repository pacing, transient API retries, and up to nine Gemini enrichment calls.
 
 ## Operational note
 
-The arXiv rule remains strict D-1. On days when fewer than three eligible arXiv papers exist, the pipeline raises `SelectionError` rather than silently extending the time window. The same strict three-paper requirement applies after cross-source deduplication for Semantic Scholar and OpenAlex.
+The arXiv rule remains strict D-1. If a repository returns fewer than three
+eligible unique papers, SciLitAI omits that repository rather than silently
+extending its time window. If every repository is unavailable or has no
+eligible papers, the pipeline raises `SelectionError` and does not send an
+empty digest.

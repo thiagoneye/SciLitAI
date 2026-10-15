@@ -24,13 +24,15 @@ SOURCE_NAMES: dict[ScientificSource, str] = {
 SECTION_TITLES: dict[ScientificSource, str] = {
     "arxiv": "arXiv — Top 3 relevantes publicados/atualizados em D-1",
     "semantic_scholar": "Semantic Scholar — Top 3 relevantes dos últimos 30 dias",
-    "openalex": "OpenAlex — Top 3 mais citados dos últimos 60 dias",
+    "openalex": "OpenAlex — Top 3 mais citados dos últimos 365 dias",
 }
 
 
 def build_telegram_messages(
     items: list[DigestItem],
     run_date: date,
+    *,
+    source_statuses: dict[ScientificSource, str] | None = None,
 ) -> list[str]:
     """Build Telegram HTML messages below the platform text limit."""
 
@@ -53,7 +55,14 @@ def build_telegram_messages(
             ),
             key=lambda item: item.selected.rank,
         )
-        blocks.extend(_format_item(item) for item in source_items)
+        if source_items:
+            blocks.extend(_format_item(item) for item in source_items)
+        else:
+            status = (source_statuses or {}).get(
+                source,
+                "Nenhum artigo disponível para esta fonte nesta execução.",
+            )
+            blocks.append(html.escape(status))
 
     return _chunk_blocks(blocks)
 
@@ -146,20 +155,22 @@ def _format_publication_date(paper: ScientificPaper) -> str:
 
 
 def _validate_source_counts(items: list[DigestItem]) -> None:
-    """Require exactly three selected papers from each configured source."""
+    """Require a non-empty partial digest with no more than three per source."""
 
     counts = Counter(item.selected.paper.source for item in items)
     invalid = {
         SOURCE_NAMES[source]: counts[source]
         for source in SOURCE_ORDER
-        if counts[source] != EXPECTED_PER_SOURCE
+        if counts[source] > EXPECTED_PER_SOURCE
     }
     if invalid:
         details = ", ".join(f"{name}={count}" for name, count in invalid.items())
         raise ValueError(
-            "Digest must contain exactly three papers from each source; "
+            "Digest must contain no more than three papers from each source; "
             f"received {details}."
         )
+    if not items:
+        raise ValueError("Digest must contain at least one paper.")
 
 
 def _chunk_blocks(blocks: list[str]) -> list[str]:
@@ -169,6 +180,13 @@ def _chunk_blocks(blocks: list[str]) -> list[str]:
     current = ""
 
     for block in blocks:
+        if len(block) > TELEGRAM_SAFE_LIMIT:
+            if current:
+                messages.append(current)
+                current = ""
+            messages.extend(_split_oversized_block(block))
+            continue
+
         candidate = block if not current else f"{current}\n\n{block}"
         if len(candidate) <= TELEGRAM_SAFE_LIMIT:
             current = candidate
@@ -182,6 +200,60 @@ def _chunk_blocks(blocks: list[str]) -> list[str]:
         messages.append(current)
 
     return messages
+
+
+def _split_oversized_block(block: str) -> list[str]:
+    """Split oversized HTML at text boundaries while keeping tags balanced."""
+
+    tokens = re.findall(
+        r"</?[A-Za-z][^>]*>|&(?:#[0-9]+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);|.",
+        block,
+        flags=re.DOTALL,
+    )
+    messages: list[str] = []
+    current: list[str] = []
+    open_tags: list[str] = []
+
+    for token in tokens:
+        closing = re.fullmatch(r"</([A-Za-z][A-Za-z0-9]*)>", token)
+        opening = re.match(r"<([A-Za-z][A-Za-z0-9]*)\b", token)
+        next_open_tags = open_tags.copy()
+        if closing:
+            if next_open_tags and next_open_tags[-1].startswith(
+                f"<{closing.group(1)}"
+            ):
+                next_open_tags.pop()
+        elif opening:
+            next_open_tags.append(token)
+
+        candidate = "".join(current) + token + _closing_tags(next_open_tags)
+        if len(candidate) > TELEGRAM_SAFE_LIMIT and current:
+            messages.append("".join(current) + _closing_tags(open_tags))
+            current = open_tags.copy()
+            candidate = "".join(current) + token + _closing_tags(next_open_tags)
+
+        if len(candidate) > TELEGRAM_SAFE_LIMIT:
+            raise ValueError(
+                "A Telegram HTML token exceeds the safe message limit."
+            )
+
+        current.append(token)
+        open_tags = next_open_tags
+
+    if current:
+        messages.append("".join(current) + _closing_tags(open_tags))
+
+    return messages
+
+
+def _closing_tags(open_tags: list[str]) -> str:
+    """Return closing tags for an HTML stack in reverse nesting order."""
+
+    return "".join(
+        f"</{match.group(1)}>"
+        for tag in reversed(open_tags)
+        if (match := re.match(r"<([A-Za-z][A-Za-z0-9]*)\b", tag))
+    )
 
 
 def _format_authors(authors: list[str]) -> str:

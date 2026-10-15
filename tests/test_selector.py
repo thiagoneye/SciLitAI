@@ -237,6 +237,32 @@ def test_identity_keys_normalize_doi_and_title() -> None:
     assert "title:physics informed neural operators" in keys
 
 
+def test_identity_keys_deduplicate_doi_resolver_variants() -> None:
+    """Treat doi.org and legacy dx.doi.org links as the same DOI."""
+
+    publication = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    doi_org_paper = _paper(
+        "openalex",
+        "W1",
+        "Paper A",
+        "Abstract.",
+        publication,
+        doi="https://doi.org/10.1000/ABC",
+    )
+    dx_doi_org_paper = _paper(
+        "semantic_scholar",
+        "S1",
+        "Different title",
+        "Different abstract.",
+        publication,
+        doi="http://dx.doi.org/10.1000/abc",
+    )
+
+    assert paper_identity_keys(doi_org_paper) & paper_identity_keys(
+        dx_doi_org_paper
+    ) == {"doi:10.1000/abc"}
+
+
 def test_openalex_rejects_acronym_only_false_positive() -> None:
     """Reject a citation-rich paper that lacks a high-precision thematic phrase."""
 
